@@ -1,24 +1,62 @@
 # MCP Translator Proxy
 
-A JSON-RPC to REST API translator that proxies MCP requests from Claude Code to MCPO service.
+A JSON-RPC to REST API translator that proxies MCP requests from Claude Code to MCPO service. Built for the **OpenClaude ecosystem** to enable seamless integration with remote MCP servers.
+
+## The Problem It Solves
+
+Claude Code communicates using the MCP (Model Context Protocol) via JSON-RPC over stdio. However, many MCP servers only expose REST APIs through [MCPO](https://github.com/snotacus/mcpo) (MCP over REST). This creates a compatibility gap:
+
+```
+Claude Code (MCP stdio/JSON-RPC)  →  ❌  MCPO REST API
+```
+
+**mcpo-translator bridges this gap**, acting as a pure proxy:
+
+```
+Claude Code (MCP stdio/JSON-RPC)  →  mcpo-translator  →  MCPO REST API  →  MCP Servers
+```
+
+## Features
+
+### ⚡ Spec Caching
+- OpenAPI specs cached locally with 24-hour TTL
+- Instant startup after first run
+- Reduces MCPO server load significantly
+
+### 🔄 Retry Logic
+- Exponential backoff for transient failures (500ms → 1s → 2s)
+- Automatic retry on connection errors, timeouts, 5xx errors
+- Configurable max retries and backoff multiplier
+
+### 🔍 Tool Search & Discovery
+- Search across all tools with `searchTools(query)`
+- Filter tools by server with `getToolsByServer()`
+- List all available servers with `getServers()`
+
+### ✅ Full Protocol Support
+- **HTTP Transport**: Standard JSON-RPC over HTTP POST
+- **SSE Transport**: Server-Sent Events for streaming
+- **WebSocket Transport**: Bidirectional communication
+- Automatic tool discovery from OpenAPI specs
+
+### 🔐 Authentication
+- Bearer token propagation
+- Configurable auth headers
+- Secure token handling (in-memory only)
+
+### 📊 Monitoring
+- Health check endpoint (`/health`)
+- Tool discovery endpoint (`/tools`)
+- Structured logging with request/response metrics
 
 ## Architecture
 
 ```
-Claude Code (JSON-RPC) ↔ MCP Translator ↔ MCPO REST API ↔ Individual MCP Servers
+┌─────────────────┐   MCP JSON-RPC   ┌─────────────────┐   REST API   ┌─────────────────┐
+│   Claude Code   │  ──────────────► │ mcpo-translator │ ───────────► │  MCPO Server    │
+│  (OpenClaude)   │  ◄────────────── │                 │  ◄────────── │                │
+└─────────────────┘                  └─────────────────┘              └─────────────────┘
 ```
-
-## How It Works
-
-The translator acts as a pure proxy between Claude Code (expecting JSON-RPC MCP protocol) and MCPO (exposing REST APIs):
-
-1. **Initialization**: Translator queries MCPO at `http://localhost:8866` for available servers
-2. **Discovery**: Checks each server's `/openapi.json` endpoint to discover tools
-3. **Tool Extraction**: Parses OpenAPI specs to extract tool definitions
-4. **Aggregation**: Collects tools from all servers, renaming conflicts with server prefixes
-5. **Proxy**: When Claude Code calls a tool, translator proxies the call to MCPO REST API
-
-**NO LOCAL SERVERS ARE SPAWNED** - Translator is a pure proxy to MCPO REST API.
 
 ## Quick Start
 
@@ -36,7 +74,7 @@ cp .env.example .env
 ### 3. Start Server
 ```bash
 npm start
-# Development mode:
+# Development mode with auto-reload:
 npm run dev
 ```
 
@@ -57,52 +95,25 @@ Update your `~/.mcp.json`:
 }
 ```
 
-## Architecture
-
-```
-┌─────────────────┐    MCP JSON-RPC    ┌─────────────────┐    REST API     ┌─────────────────┐
-│   Claude Code   │ ──────────────────►│   Translator    │ ───────────────►│   MCPO Server   │
-│                 │ ◄──────────────────│                 │ ◄───────────────│                 │
-└─────────────────┘                    └─────────────────┘                 └─────────────────┘
-```
-
-## Features
-
-### ✅ Protocol Support
-- **HTTP Transport**: Standard JSON-RPC over HTTP POST
-- **SSE Transport**: Server-Sent Events for streaming
-- **WebSocket Transport**: Bidirectional communication
-
-### ✅ Tool Discovery
-- Automatic parsing of OpenAPI specs
-- Dynamic tool registration
-- Caching for performance
-
-### ✅ Authentication
-- Bearer token propagation
-- Configurable auth headers
-- Token rotation support
-
-### ✅ Monitoring
-- Health check endpoint (`/health`)
-- Tool discovery endpoint (`/tools`)
-- Structured logging
-- Request/response metrics
-
 ## Configuration
 
 ### Environment Variables
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | Server port |
 | `MCPO_BASE_URL` | `https://mcpo.gophernuttz.us` | MCPO server URL |
 | `MCPO_AUTH_TOKEN` | - | Bearer token for authentication |
 | `LOG_LEVEL` | `info` | Logging level |
-| `CACHE_ENABLED` | `true` | Enable tool caching |
-| `CACHE_TTL` | `60000` | Cache TTL in milliseconds |
+| `CACHE_ENABLED` | `true` | Enable spec caching |
+| `CACHE_TTL` | `86400000` | Cache TTL (24 hours) |
+| `MAX_RETRIES` | `3` | Max retry attempts |
+| `RETRY_DELAY_MS` | `500` | Initial retry delay |
+| `RETRY_BACKOFF_MULTIPLIER` | `2` | Backoff multiplier |
 
 ### MCP Configuration File
-The translator reads from `~/.mcp.json`:
+
+The translator also reads from `~/.mcp.json`:
 ```json
 {
   "servers": [],
@@ -136,22 +147,6 @@ Return list of available tools parsed from OpenAPI spec.
 ### `tools/call`
 Call a tool by making REST API request to MCPO server.
 
-## Tool Discovery Process
-
-1. Fetch OpenAPI spec from `{MCPO_BASE_URL}/{toolname}/openapi.json`
-2. Parse paths and schemas
-3. Convert to MCP tool definitions
-4. Cache results for performance
-
-## Example Tool Mapping
-
-| MCP Tool Name | REST Endpoint | HTTP Method |
-|---------------|---------------|-------------|
-| `search_notes` | `/search` | POST |
-| `read_note` | `/read_note` | POST |
-| `edit_note` | `/edit_note` | POST |
-| `delete_note` | `/delete_note` | POST |
-
 ## Development
 
 ### Running Tests
@@ -162,14 +157,14 @@ npm test
 ### Code Structure
 ```
 src/
-├── server.js          # HTTP/SSE/WebSocket server
-├── mcp-handler.js     # MCP JSON-RPC handler
-├── openapi-parser.js  # OpenAPI to MCP tool converter
-└── config.js         # Configuration management
+├── server.js              # HTTP/SSE/WebSocket server
+├── mcp-proxy-handler.js   # MCP JSON-RPC handler with retry & caching
+├── openapi-parser.js      # OpenAPI to MCP tool converter
+└── config.js              # Configuration management
 ```
 
 ### Adding New Tool Support
-1. Update tool mapping in `mcp-handler.js`
+1. Update tool mapping in `mcp-proxy-handler.js`
 2. Add schema parsing logic in `openapi-parser.js`
 3. Test with real MCPO endpoints
 
@@ -193,34 +188,31 @@ src/
    - Verify `~/.mcp.json` configuration
    - Check transport compatibility
 
-### Logs
-Enable debug logging:
+### Enable Debug Logging
 ```bash
 LOG_LEVEL=debug npm start
 ```
 
-## Performance Optimization
+## Performance
 
-- **Caching**: Tool definitions cached for 1 minute
-- **Connection pooling**: HTTP clients reuse connections
-- **Request batching**: Future enhancement
-- **Compression**: Gzip compression for large responses
+- **Spec Caching**: 24-hour TTL for OpenAPI specs
+- **Connection Pooling**: HTTP agents reuse connections
+- **Retry Logic**: Exponential backoff prevents hammering failing servers
 
-## Security Considerations
+## Security
 
-- **Token handling**: Auth tokens stored in memory only
-- **Input validation**: All inputs validated against schemas
-- **Rate limiting**: Configurable rate limiting
-- **CORS**: Configurable CORS policies
+- Auth tokens stored in memory only (never persisted)
+- All inputs validated against schemas
+- Configurable CORS policies
 
-## Future Enhancements
+## .gitignore
 
-- [ ] Support for multiple MCPO servers
-- [ ] Tool result caching
-- [ ] Webhook notifications
-- [ ] Prometheus metrics
-- [ ] Docker containerization
-- [ ] Kubernetes deployment
+This project includes a `.gitignore` that excludes:
+- `node_modules/` - Dependencies
+- `.env` - Environment secrets
+- `cache/` and `.spec-cache/` - Cached specs
+- Logs and OS files
+- IDE configurations
 
 ## License
 
@@ -232,10 +224,6 @@ MIT
 2. Create a feature branch
 3. Submit a pull request
 
-## Support
-
-For issues and questions, open a GitHub issue or contact the maintainers.
-
 ---
 
-**Made with ❤️ for the Claude Code community**# mcpo-translator
+**Made with ❤️ for the OpenClaude community**
