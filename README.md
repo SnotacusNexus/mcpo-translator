@@ -12,17 +12,29 @@ Claude Code (and other MCP clients) expect to communicate with MCP servers via *
 2. **No network access** — stdio has no way to connect to remote servers
 3. **Firewall/SSH barriers** — even if you tried, network topology blocks it
 
-### The Solution: HTTP Proxy
+### The Additional Problems with HTTP Transport in Claude Code
 
-MCPO exposes MCP functionality via **REST APIs** over HTTP — the standard way to access remote services. mcpo-translator bridges the gap by:
+Even if you try to use HTTP transport directly, Claude Code has fundamental issues:
+
+1. **Forced OAuth**: Claude Code **requires OAuth** for HTTP transport servers — there's no option for simple Bearer tokens or API keys
+2. **Anthropic-Only Sanctioning**: OAuth only works with servers that are **officially sanctioned by Anthropic** — your own self-hosted MCP servers won't authenticate
+3. **Broken PKCE + OS Keychain**: Even if you implement a **fully compliant OAuth 2.1 endpoint with PKCE**, Claude Code fails to register the tokens with the OS secure storage (Keychain on macOS, Credential Manager on Windows)
+4. **Token Retrieval Failure**: Because keys aren't stored in the OS keychain, the application **cannot retrieve them** on subsequent connections, causing every connection to fail after the first OAuth flow
+
+### The Solution: Stdio-to-HTTP Bridge
+
+This tool solves ALL of the above by using **stdio transport from Claude Code's perspective** while translating to HTTP internally:
 
 ```
-Claude Code (MCP stdio)  →  mcpo-translator (HTTP)  →  MCPO REST API  →  MCP Servers
+Claude Code (MCP stdio)  →  mcpo-translator (stdio ↔ HTTP)  →  MCPO REST API  →  MCP Servers
 ```
 
-This lets Claude Code use remote MCP servers just like local ones, while MCPO handles the actual server communication.
+- ✅ No OAuth required — uses simple Bearer tokens
+- ✅ Works with any MCPO server (your own, self-hosted, whatever)
+- ✅ No keychain issues — tokens stay in the proxy's memory
+- ✅ Full compatibility with Claude Code's native stdio transport
 
-**Key Priority**: This HTTP transport is the primary, supported method for remote MCP servers. Stdio only works for local processes — it's not a limitation of this tool, it's a fundamental constraint of the stdio protocol.
+**This is NOT a workaround — it's the only reliable way to use remote MCP servers with Claude Code.**
 
 ## Features
 
