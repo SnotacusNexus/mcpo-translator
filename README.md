@@ -36,6 +36,33 @@ Claude Code (MCP stdio)  →  mcpo-translator (stdio ↔ HTTP)  →  MCPO REST A
 
 **This is NOT a workaround — it's the only reliable way to use remote MCP servers with Claude Code.**
 
+### Recommended: Use Stdio Transport
+
+While mcpo-translator **can** be configured as an HTTP server with full OAuth 2.1 support, we **strongly recommend** using stdio transport:
+
+- **Auto-start**: Claude Code launches the translator process automatically — no manual server startup needed
+- **Simpler config**: Just point to the Node.js script, everything else is handled
+- **Zero infrastructure**: No need to keep a server running in the background
+- **Reliable**: Claude Code manages the process lifecycle
+
+```json
+// ~/.mcp.json - RECOMMENDED stdio configuration
+{
+  "mcpServers": {
+    "mcpo-translator": {
+      "command": "node",
+      "args": ["/path/to/mcpo-translator/src/stdio.js"],
+      "env": {
+        "MCPO_BASE_URL": "https://mcpo.example.com",
+        "MCPO_AUTH_TOKEN": "your-token-here"
+      }
+    }
+  }
+}
+```
+
+> **Note**: The HTTP endpoints (`POST /mcp`, `GET /mcp/sse`, `WS /mcp/ws`) are still available if you need them — but stdio is the primary, hassle-free use case.
+
 ## Features
 
 ### ⚡ Spec Caching
@@ -98,20 +125,33 @@ npm start
 npm run dev
 ```
 
-### 4. Configure Claude Code
+### 4. Configure Claude Code (Recommended: Stdio)
 Update your `~/.mcp.json`:
+
+**🚀 Recommended: Stdio (auto-starts the translator)**
 ```json
 {
-  "servers": [
-    {
-      "name": "mcpo-translator",
-      "type": "http",
-      "url": "http://localhost:3000/mcp",
-      "headers": {
-        "Authorization": "Bearer your-token-here"
+  "mcpServers": {
+    "mcpo-translator": {
+      "command": "node",
+      "args": ["/path/to/mcpo-translator/src/stdio.js"],
+      "env": {
+        "MCPO_BASE_URL": "https://mcpo.example.com",
+        "MCPO_AUTH_TOKEN": "your-bearer-token"
       }
     }
-  ]
+  }
+}
+```
+
+**⚠️ Alternative: HTTP (requires manual server start)**
+```json
+{
+  "mcpServers": {
+    "mcpo-translator": {
+      "url": "http://localhost:3000/mcp"
+    }
+  }
 }
 ```
 
