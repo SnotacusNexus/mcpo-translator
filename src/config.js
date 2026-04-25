@@ -36,7 +36,7 @@ class Config {
     // Priority: 1. Environment variable, 2. Config file, 3. Default
     return this.env.MCPO_BASE_URL || 
            this.config.mcpoBaseURL || 
-           'https://mcpo.gophernuttz.us';
+           'https://mcpo.example.com';
   }
 
   getAuthToken() {

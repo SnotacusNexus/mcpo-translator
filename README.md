@@ -2,19 +2,27 @@
 
 A JSON-RPC to REST API translator that proxies MCP requests from Claude Code to MCPO service. Built for the **OpenClaude ecosystem** to enable seamless integration with remote MCP servers.
 
-## The Problem It Solves
+## ⚠️ Why This Approach? (Important!)
 
-Claude Code communicates using the MCP (Model Context Protocol) via JSON-RPC over stdio. However, many MCP servers only expose REST APIs through [MCPO](https://github.com/snotacus/mcpo) (MCP over REST). This creates a compatibility gap:
+### The Problem with Stdio
+
+Claude Code (and other MCP clients) expect to communicate with MCP servers via **stdio transport** — they spawn the server as a child process and communicate through stdin/stdout. This works great for local servers, but **fails completely for remote servers** because:
+
+1. **You can't pipe stdin/stdout over a network** — stdio is a local-only transport
+2. **No network access** — stdio has no way to connect to remote servers
+3. **Firewall/SSH barriers** — even if you tried, network topology blocks it
+
+### The Solution: HTTP Proxy
+
+MCPO exposes MCP functionality via **REST APIs** over HTTP — the standard way to access remote services. mcpo-translator bridges the gap by:
 
 ```
-Claude Code (MCP stdio/JSON-RPC)  →  ❌  MCPO REST API
+Claude Code (MCP stdio)  →  mcpo-translator (HTTP)  →  MCPO REST API  →  MCP Servers
 ```
 
-**mcpo-translator bridges this gap**, acting as a pure proxy:
+This lets Claude Code use remote MCP servers just like local ones, while MCPO handles the actual server communication.
 
-```
-Claude Code (MCP stdio/JSON-RPC)  →  mcpo-translator  →  MCPO REST API  →  MCP Servers
-```
+**Key Priority**: This HTTP transport is the primary, supported method for remote MCP servers. Stdio only works for local processes — it's not a limitation of this tool, it's a fundamental constraint of the stdio protocol.
 
 ## Features
 
@@ -102,7 +110,7 @@ Update your `~/.mcp.json`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3000` | Server port |
-| `MCPO_BASE_URL` | `https://mcpo.gophernuttz.us` | MCPO server URL |
+| `MCPO_BASE_URL` | `https://mcpo.example.com` | MCPO server URL |
 | `MCPO_AUTH_TOKEN` | - | Bearer token for authentication |
 | `LOG_LEVEL` | `info` | Logging level |
 | `CACHE_ENABLED` | `true` | Enable spec caching |
@@ -117,7 +125,7 @@ The translator also reads from `~/.mcp.json`:
 ```json
 {
   "servers": [],
-  "mcpoBaseURL": "https://mcpo.gophernuttz.us",
+  "mcpoBaseURL": "https://mcpo.example.com",
   "authToken": "your-token",
   "environment": "development"
 }
