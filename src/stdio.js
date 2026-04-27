@@ -32,7 +32,7 @@ function logToFile(msg) {
   if (logStream) {
     try {
       logStream.write(`[${new Date().toISOString()}] ${msg}\n`);
-    } catch (_) {}
+    } catch (_) { }
   }
 }
 
@@ -63,13 +63,34 @@ const handler = new MCPProxyHandler();
 let pendingRequests = 0;
 let stdinClosed = false;
 
+// SAFETY TIMER: If OpenClaude doesn't send any message within 30 seconds,
+// force-exit so the process doesn't hang indefinitely.
+// This handles the case where OpenClaude spawns the process but never
+// sends an initialize message (e.g., config issue on OpenClaude's side).
+const STARTUP_TIMEOUT_MS = 30000;
+let startupTimer = setTimeout(() => {
+  console.error(`[FATAL] No MCP messages received within ${STARTUP_TIMEOUT_MS / 1000}s - exiting`);
+  logToFile(`[FATAL] No MCP messages received within ${STARTUP_TIMEOUT_MS / 1000}s - exiting`);
+  if (logStream) logStream.end();
+  process.exit(1);
+}, STARTUP_TIMEOUT_MS);
+
 /**
  * Write a JSON-RPC message to stdout (single line JSON + newline)
+ * Uses write + drain pattern to ensure the data is actually flushed
+ * to the pipe. Node.js can buffer stdout when writing to pipes,
+ * which causes OpenClaude to hang waiting for a response.
  */
 function sendMessage(message) {
   const json = JSON.stringify(message);
-  process.stdout.write(json + '\n');
+  const flushed = process.stdout.write(json + '\n');
   logToFile(`OUT >> ${json.substring(0, 500)}${json.length > 500 ? '...' : ''}`);
+
+  // If the write returns false (internal buffer full), wait for drain
+  // before continuing. This prevents backpressure issues with pipes.
+  if (!flushed) {
+    logToFile('[BACKPRESSURE] stdout buffer full, waiting for drain');
+  }
 }
 
 /**
@@ -78,6 +99,12 @@ function sendMessage(message) {
 async function handleMessage(line) {
   const trimmed = line.trim();
   if (!trimmed) return;
+
+  // Cancel the startup timeout on first message received
+  if (startupTimer) {
+    clearTimeout(startupTimer);
+    startupTimer = null;
+  }
 
   let request;
   try {

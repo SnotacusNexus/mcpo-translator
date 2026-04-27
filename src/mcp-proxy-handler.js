@@ -32,89 +32,95 @@ class MCPProxyHandler {
     this._schemaCache = new Map(); // Cache for resolved schemas
 
     // Retry configuration
-    this.maxRetries = 3;
-    this.retryDelayMs = 500;
+    this.maxRetries = 2;
+    this.retryDelayMs = 300;
     this.retryBackoffMultiplier = 2;
+
+    // Discovery timeout - how long to wait for MCPO server discovery
+    // before serving with whatever we have. OpenClaude has its own
+    // timeout and will show the server as "not connected" if we take
+    // too long to respond to tools/list.
+    this.discoveryTimeoutMs = 6000;
 
     // Tool usage metrics
     this._toolMetrics = new Map(); // toolName -> { calls, errors, totalLatency }
 
     // Ensure cache directory exists
     this._ensureCacheDir();
-}
+  }
 
-// =========================================================================
-// RETRY LOGIC
-// =========================================================================
+  // =========================================================================
+  // RETRY LOGIC
+  // =========================================================================
 
-/**
- * Execute an async function with exponential backoff retry
- * @param {Function} fn - Async function to execute
- * @param {string} operationName - Name for logging
- * @param {number} maxRetries - Max retry attempts (default: this.maxRetries)
- * @returns {Promise<any>} - Result of the function
- */
-async _executeWithRetry(fn, operationName, maxRetries = this.maxRetries) {
-let lastError;
-const attemptLog = (attempt, delay) => {
-console.log(` ⏳ ${operationName}: attempt ${attempt}/${maxRetries}${delay ? `, retrying in ${delay}ms...` : ''}`);
-};
+  /**
+   * Execute an async function with exponential backoff retry
+   * @param {Function} fn - Async function to execute
+   * @param {string} operationName - Name for logging
+   * @param {number} maxRetries - Max retry attempts (default: this.maxRetries)
+   * @returns {Promise<any>} - Result of the function
+   */
+  async _executeWithRetry(fn, operationName, maxRetries = this.maxRetries) {
+    let lastError;
+    const attemptLog = (attempt, delay) => {
+      console.log(` ⏳ ${operationName}: attempt ${attempt}/${maxRetries}${delay ? `, retrying in ${delay}ms...` : ''}`);
+    };
 
-for (let attempt = 1; attempt <= maxRetries; attempt++) {
-try {
-return await fn();
-} catch (error) {
-lastError = error;
-const isRetryable = this._isRetryableError(error);
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error;
+        const isRetryable = this._isRetryableError(error);
 
-// Don't retry if error is not retryable and this isn't the last attempt
-if (!isRetryable && attempt < maxRetries) {
-console.error(` ⚠️ ${operationName}: non-retryable error (${error.code || error.message}), giving up`);
-throw error;
-}
+        // Don't retry if error is not retryable and this isn't the last attempt
+        if (!isRetryable && attempt < maxRetries) {
+          console.error(` ⚠️ ${operationName}: non-retryable error (${error.code || error.message}), giving up`);
+          throw error;
+        }
 
-if (attempt < maxRetries) {
-const delay = this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1);
-attemptLog(attempt, delay);
-await this._sleep(delay);
-} else {
-attemptLog(attempt, 0);
-}
-}
-}
+        if (attempt < maxRetries) {
+          const delay = this.retryDelayMs * Math.pow(this.retryBackoffMultiplier, attempt - 1);
+          attemptLog(attempt, delay);
+          await this._sleep(delay);
+        } else {
+          attemptLog(attempt, 0);
+        }
+      }
+    }
 
-// All retries exhausted
-throw lastError;
-}
+    // All retries exhausted
+    throw lastError;
+  }
 
-/**
- * Check if an error is retryable (transient failures)
- */
-_isRetryableError(error) {
-if (!error) return false;
-const code = error.code;
-const status = error.response?.status;
+  /**
+   * Check if an error is retryable (transient failures)
+   */
+  _isRetryableError(error) {
+    if (!error) return false;
+    const code = error.code;
+    const status = error.response?.status;
 
-// Retry on network errors
-if (code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ENOTFOUND' ||
-code === 'ECONNRESET' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
-return true;
-}
+    // Retry on network errors
+    if (code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ENOTFOUND' ||
+      code === 'ECONNRESET' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH') {
+      return true;
+    }
 
-// Retry on HTTP 5xx errors and rate limiting
-if (status >= 500 || status === 429) {
-return true;
-}
+    // Retry on HTTP 5xx errors and rate limiting
+    if (status >= 500 || status === 429) {
+      return true;
+    }
 
-return false;
-}
+    return false;
+  }
 
-/**
- * Sleep for specified milliseconds
- */
-_sleep(ms) {
-return new Promise(resolve => setTimeout(resolve, ms));
-}
+  /**
+   * Sleep for specified milliseconds
+   */
+  _sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
 
 
   // =========================================================================
@@ -141,7 +147,7 @@ return new Promise(resolve => setTimeout(resolve, ms));
 
         if (age < maxAge) {
           const cached = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-          console.log(`[CACHE] Loaded cached spec for "${serverName}" (age: ${Math.round(age/1000)}s)`);
+          console.log(`[CACHE] Loaded cached spec for "${serverName}" (age: ${Math.round(age / 1000)}s)`);
           return cached;
         }
       }
@@ -209,7 +215,12 @@ return new Promise(resolve => setTimeout(resolve, ms));
     if (!this._initPromise) {
       this._initPromise = this.initialize().catch(err => {
         console.error('Background init failed:', err.message);
-        this._initPromise = null; // Allow retry
+        // CRITICAL: Mark as initialized even on failure so tools/list
+        // doesn't hang waiting for discovery that will never complete.
+        // The else branch in _waitForInit had NO timeout protection,
+        // causing tools/list to block indefinitely on retry.
+        this.initialized = true;
+        this._initPromise = null;
       });
     }
     return this._initPromise;
@@ -217,13 +228,32 @@ return new Promise(resolve => setTimeout(resolve, ms));
 
   /**
    * Wait for background initialization to complete
+   * ALWAYS resolves within a bounded time - never hangs.
+   * Uses discoveryTimeoutMs (default 6s) as the max wait.
    */
   async _waitForInit() {
     if (this.initialized) return;
     if (this._initPromise) {
-      await this._initPromise;
+      // Race the discovery against a timeout - if MCPO is slow,
+      // serve whatever we have (even empty) rather than hanging
+      const timeout = new Promise(resolve => setTimeout(resolve, this.discoveryTimeoutMs));
+      await Promise.race([this._initPromise, timeout]);
+      if (!this.initialized) {
+        console.warn(`[TIMEOUT] MCPO discovery timed out after ${this.discoveryTimeoutMs}ms, serving with partial results`);
+        this.initialized = true; // Mark as done so tools/list returns
+      }
     } else {
-      await this.initialize();
+      // BUG FIX: This path had NO timeout protection before.
+      // If _initPromise was null (e.g., after a failed init attempt),
+      // it would call initialize() directly and block indefinitely.
+      // Now we race it against a timeout just like the promise path.
+      console.warn('[INIT] _initPromise was null, initializing with timeout guard');
+      const timeout = new Promise(resolve => setTimeout(resolve, this.discoveryTimeoutMs));
+      await Promise.race([this.initialize(), timeout]);
+      if (!this.initialized) {
+        console.warn(`[TIMEOUT] MCPO discovery timed out after ${this.discoveryTimeoutMs}ms (retry path), serving with partial results`);
+        this.initialized = true;
+      }
     }
   }
 
@@ -269,7 +299,7 @@ return new Promise(resolve => setTimeout(resolve, ms));
 
         const response = await axios.get(openapiUrl, {
           headers,
-          timeout: 5000
+          timeout: 3000 // 3s per server - 23 servers in parallel = max ~3s
         });
 
         if (response.data) {
@@ -951,7 +981,11 @@ return new Promise(resolve => setTimeout(resolve, ms));
       },
       capabilities: {
         tools: {},
-        resources: {},
+        // NOTE: resources intentionally omitted. OpenClaude (fork of Claude Code)
+        // has a bug where the mcpSkills.js module is a stub that doesn't export
+        // fetchMcpSkillsForClient. Advertising resources capability triggers a call
+        // to that undefined function, causing "fetchMcpSkillsForClient is not a function".
+        // This proxy only provides tools via MCPO, not MCP resources.
         notifications: {}
       }
     };
@@ -1055,17 +1089,17 @@ return new Promise(resolve => setTimeout(resolve, ms));
         headers['Authorization'] = `Bearer ${this.authToken}`;
       }
 
-const startTime = Date.now();
+      const startTime = Date.now();
 
-// Use retry logic for network errors
-const response = await this._executeWithRetry(async () => {
-  return await axios.post(url, args, {
-    headers,
-    timeout: 30000,
-    validateStatus: () => true // NEVER throw on any HTTP status
-  });
-}, `MCPO call: ${serverName}/${originalToolName}`);
-const elapsed = Date.now() - startTime;
+      // Use retry logic for network errors
+      const response = await this._executeWithRetry(async () => {
+        return await axios.post(url, args, {
+          headers,
+          timeout: 30000,
+          validateStatus: () => true // NEVER throw on any HTTP status
+        });
+      }, `MCPO call: ${serverName}/${originalToolName}`);
+      const elapsed = Date.now() - startTime;
 
       console.log(` MCPO response: HTTP ${response.status} (${elapsed}ms)`);
 
@@ -1192,89 +1226,89 @@ const elapsed = Date.now() - startTime;
 
   // =========================================================================
 
-// =========================================================================
-// TOOL SEARCH / DISCOVERY
-// =========================================================================
+  // =========================================================================
+  // TOOL SEARCH / DISCOVERY
+  // =========================================================================
 
-/**
- * Search for tools matching a query
- * @param {string} query - Search query (keyword, tool name, or server name)
- * @param {Object} options - Search options
- * @param {string} options.server - Filter by server name
- * @param {number} options.limit - Max results to return (default: 20)
- * @returns {Array} - Array of matching tools with relevance scores
- */
-searchTools(query, options = {}) {
-const { server: serverFilter, limit = 20 } = options;
+  /**
+   * Search for tools matching a query
+   * @param {string} query - Search query (keyword, tool name, or server name)
+   * @param {Object} options - Search options
+   * @param {string} options.server - Filter by server name
+   * @param {number} options.limit - Max results to return (default: 20)
+   * @returns {Array} - Array of matching tools with relevance scores
+   */
+  searchTools(query, options = {}) {
+    const { server: serverFilter, limit = 20 } = options;
 
-if (!query || query.trim() === '') {
-return this.tools
-.filter(t => !serverFilter || t.server === serverFilter)
-.slice(0, limit)
-.map(t => ({ ...t, relevance: 1 }));
-}
+    if (!query || query.trim() === '') {
+      return this.tools
+        .filter(t => !serverFilter || t.server === serverFilter)
+        .slice(0, limit)
+        .map(t => ({ ...t, relevance: 1 }));
+    }
 
-const searchTerms = query.toLowerCase().trim().split(/\s+/);
+    const searchTerms = query.toLowerCase().trim().split(/\s+/);
 
-// Score each tool
-const scored = this.tools
-.filter(t => !serverFilter || t.server === serverFilter)
-.map(tool => {
-let score = 0;
-const name = (tool.originalName || tool.name || '').toLowerCase();
-const desc = (tool.description || '').toLowerCase();
-const server = (tool.server || '').toLowerCase();
+    // Score each tool
+    const scored = this.tools
+      .filter(t => !serverFilter || t.server === serverFilter)
+      .map(tool => {
+        let score = 0;
+        const name = (tool.originalName || tool.name || '').toLowerCase();
+        const desc = (tool.description || '').toLowerCase();
+        const server = (tool.server || '').toLowerCase();
 
-for (const term of searchTerms) {
-if (term.length < 2) continue;
+        for (const term of searchTerms) {
+          if (term.length < 2) continue;
 
-// Exact match (highest score)
-if (name === term) score += 100;
-else if (name.startsWith(term)) score += 80;
-else if (name.includes(term)) score += 60;
+          // Exact match (highest score)
+          if (name === term) score += 100;
+          else if (name.startsWith(term)) score += 80;
+          else if (name.includes(term)) score += 60;
 
-// Description match
-if (desc.includes(term)) score += 30;
+          // Description match
+          if (desc.includes(term)) score += 30;
 
-// Server match
-if (server === term) score += 50;
-else if (server.includes(term)) score += 20;
+          // Server match
+          if (server === term) score += 50;
+          else if (server.includes(term)) score += 20;
 
-// Fuzzy match (partial word)
-const nameWords = name.split(/[_\-\s]/);
-if (nameWords.some(w => w.startsWith(term) || w.includes(term))) score += 25;
-}
+          // Fuzzy match (partial word)
+          const nameWords = name.split(/[_\-\s]/);
+          if (nameWords.some(w => w.startsWith(term) || w.includes(term))) score += 25;
+        }
 
-return { ...tool, relevance: score };
-})
-.filter(t => t.relevance > 0)
-.sort((a, b) => b.relevance - a.relevance);
+        return { ...tool, relevance: score };
+      })
+      .filter(t => t.relevance > 0)
+      .sort((a, b) => b.relevance - a.relevance);
 
-return scored.slice(0, limit);
-}
+    return scored.slice(0, limit);
+  }
 
-/**
- * Get tools organized by server
- * @returns {Map} - Map of serverName -> tools array
- */
-getToolsByServer() {
-const byServer = new Map();
-for (const tool of this.tools) {
-if (!byServer.has(tool.server)) {
-byServer.set(tool.server, []);
-}
-byServer.get(tool.server).push(tool);
-}
-return byServer;
-}
+  /**
+   * Get tools organized by server
+   * @returns {Map} - Map of serverName -> tools array
+   */
+  getToolsByServer() {
+    const byServer = new Map();
+    for (const tool of this.tools) {
+      if (!byServer.has(tool.server)) {
+        byServer.set(tool.server, []);
+      }
+      byServer.get(tool.server).push(tool);
+    }
+    return byServer;
+  }
 
-/**
- * Get list of all available server names
- * @returns {Array} - Array of server names
- */
-getServers() {
-return Array.from(this.servers.keys());
-}
+  /**
+   * Get list of all available server names
+   * @returns {Array} - Array of server names
+   */
+  getServers() {
+    return Array.from(this.servers.keys());
+  }
 
   // MAIN REQUEST HANDLER
   // =========================================================================
@@ -1302,6 +1336,12 @@ return Array.from(this.servers.keys());
       // Handle notifications (no response needed per JSON-RPC spec)
       if (method.startsWith('notifications/')) {
         console.log(` Notification: ${method} (no response sent)`);
+        // For 'initialized' notification, kick off background discovery
+        // if it hasn't started yet (some clients send initialized after
+        // receiving the initialize response)
+        if (method === 'notifications/initialized' && !this._initPromise) {
+          this._startBackgroundInit();
+        }
         return null;
       }
 

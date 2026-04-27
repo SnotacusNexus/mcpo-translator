@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });       
 class Config {
   constructor() {
     this.config = this.loadConfig();
@@ -36,14 +36,14 @@ class Config {
     // Priority: 1. Environment variable, 2. Config file, 3. Default
     return this.env.MCPO_BASE_URL || 
            this.config.mcpoBaseURL || 
-           'https://mcpo.example.com';
+      'https://mcpo.gophernuttz.us';
   }
 
   getAuthToken() {
     // Priority: 1. Environment variable, 2. Config file
     return this.env.MCPO_AUTH_TOKEN || 
            this.config.authToken || 
-           null;
+      'Snotobot0bot';
   }
 
   getServerInfo() {
