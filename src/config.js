@@ -36,14 +36,14 @@ class Config {
     // Priority: 1. Environment variable, 2. Config file, 3. Default
     return this.env.MCPO_BASE_URL || 
            this.config.mcpoBaseURL || 
-      'https://mcpo.gophernuttz.us';
+      'https://mcpo.example.com';
   }
 
   getAuthToken() {
     // Priority: 1. Environment variable, 2. Config file
     return this.env.MCPO_AUTH_TOKEN || 
            this.config.authToken || 
-      'Snotobot0bot';
+      null;
   }
 
   getServerInfo() {
